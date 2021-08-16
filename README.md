@@ -9,8 +9,8 @@ After downloading a single chapter, its pages will be merged into a single pdf f
 An environment Python scripts can be run in.
 
 ### Installation
-  git clone https://github.com/liviusi/Mangadex-Downloader/
-  cd Mangadex-Downloader
+    git clone https://github.com/liviusi/Mangadex-Downloader/
+    cd Mangadex-Downloader
 
 ### Usage
 + `l` flag: optionally allows for a language different from English to be chosen for downloading. [ISO 639-1](https://en.wikipedia.org/wiki/List_of_ISO_639-1_codes) codes are available.
