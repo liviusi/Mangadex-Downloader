@@ -1,128 +1,172 @@
-# -------------------------------- 
-# --------- Requirements ---------
-# --------------------------------
-import os.path
-from tqdm import tqdm # It just makes things look good
-from time import sleep
-from selenium import webdriver
-from selenium.webdriver.common.by import By
-from selenium.webdriver.chrome.options import Options
-from selenium.common.exceptions import TimeoutException, WebDriverException
-from selenium.webdriver.support.ui import WebDriverWait
-from selenium.webdriver.common.action_chains import ActionChains
-from selenium.webdriver.support import expected_conditions as EC
+#!/usr/bin/env python3
 
-# next_chapter = driver.find_element_by_class_name("chapter-link-right").get_attribute("href")
+import os, json, time, shutil, requests, argparse
+from fpdf import FPDF
+from PIL import Image
 
-def chapterValid(URL):
-    if 'http' in URL and '://mangadex.org/chapter' in URL:
-        return True
-    else:
-        return False
+URL = "https://api.mangadex.org/"
 
-# Loads page, driver has already gotten URL
-def loadPage(driver):
-    DELAY = 2
-    try:
-        sleep(DELAY)
-        alert = driver.find_element_by_class_name("message") # needed
-        ActionChains(driver).move_to_element(alert).click().perform() # needed
-        WebDriverWait(driver, DELAY).until(expected_conditions.presence_of_element_located(
-            (By.XPATH, "html/body/div[1]/div[2]/div[2]/div/img"))) # Loaded
-    except Exception:
-        sleep(DELAY)
+def floatify(elem):
+	x = 0
+	try:
+		x = float(elem[0])
+	finally:
+		return x
 
-# download picture given its direct link and directory to save it in
-def downloadPic(picURL, directory, pageNUM):
-    import requests
-    AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/84.0.4147.105 Safari/537.36'
-    req = requests.get(picURL, headers={'User-Agent':AGENT})
-    with open(directory + '/' + str(pageNUM) + '.png', 'wb') as f:
-        f.write(req.content)
+# ID is Manga ID
+def get_title(ID, lang):
+	r = requests.get(URL + "manga/{}".format(ID))
+	json_r = r.json()
+	try:
+		title = json_r["data"]["attributes"]["title"][lang]
+		return title
+	except KeyError:
+		print("ID {} is not valid.".format(ID))
+		exit(1)
 
-# download page given driver, title, URL and delay
-def downloadPage(driver, directory, chapTITLE, chapURL, pageNUM):
-    driver.get(chapURL + '/' + str(pageNUM))
-    loadPage(driver)
-    picURL = driver.find_element_by_xpath("html/body/div[1]/div[2]/div[2]/div/img").get_attribute("src")
-    downloadPic(picURL, directory, pageNUM)
+# ID is Manga ID
+def get_chapters(ID, lang):
+	BASE = URL + "manga/{}/feed?".format(ID)
+	chapter_list = []
+	r = requests.get(BASE, { 'limit': '0', 'translatedLanguage[]': lang })
+	try:
+		total = r.json()["total"]
+	except KeyError:
+		print("Could not get chapters for {}.".format(ID))
+		exit(1)
+	if (total == 0):
+		print("No chapters are available for {}.".format(ID))
+		return chapter_list
+	# no more than 500 chapters can be loaded at a time
+	offset = 0
+	at_most = 500
+	while offset < total:
+		r = requests.get(BASE, { 'order[chapter]': 'asc', 'order[volume]': 'asc', 'limit': str(at_most), 'translatedLanguage[]': lang, 'offset': str(offset) })
+		chapters = r.json()["results"]
+		for chapter in chapters:
+			chapter_number = chapter["data"]["attributes"]["chapter"] # chapter number
+			chapter_id = chapter["data"]["id"] # chapter unique id
+			chapter_title = chapter["data"]["attributes"]["title"] # chapter title
+			if chapter_number == None:
+				chapter_list.append(("ONESHOT", chapter_title, chapter_id))
+			else:
+				chapter_list.append((chapter_number, chapter_title, chapter_id))
+		offset += 500
+	return chapter_list
 
-# download chapter given driver, title, URL and delay
-def downloadChapter(driver, chapTITLE, chapURL):    
-    firstPAGE = chapURL + '/1'
-    driver.get(firstPAGE)
-    loadPage(driver)
+# ID is Chapter ID
+def get_chapnum(ID):
+	r = requests.get(URL + "chapter/{}".format(ID))
+	chapter = json.loads(r.text) # chapter data
+	return chapter["data"]["attributes"]["chapter"]
 
-    # Fetch data
-    title = driver.find_element_by_class_name('manga-link').text
-    pages = int(driver.find_element_by_class_name('total-pages').text)
+# ID is Chapter ID
+def get_images(ID, mode):
+	r = requests.get(URL + "chapter/{}".format(ID))
+	chapter = json.loads(r.text) # chapter data
+	r = requests.get(URL + "at-home/server/{}".format(ID))
+	try:
+		base = r.json()["baseUrl"] # used to retrieve pages
+	except KeyError:
+		print("Server could not be found for chapter {}.".format(ID))
+		exit(1)
+	# now urls can be computed
+	images = []
+	hash = chapter["data"]["attributes"]["hash"]
+	for p in chapter["data"]["attributes"][mode]: # pages' filename
+			images.append("{}/{}/{}/{}".format(base, mode, hash, p))
+	return images
 
-    if not os.path.exists(title):
-        os.mkdir(title)
+def download_chapter(ID, mode="data", lang="en"):
+	images = get_images(ID, mode)
+	num = get_chapnum(ID)
+	dest_directory = os.path.join(os.getcwd(), num)
+	if not os.path.exists(dest_directory):
+		os.makedirs(dest_directory)
+	for page_number, image in enumerate(images, 1):
+		name = str(page_number) + ".png"
+		dest_filename = os.path.join(dest_directory, name)
+		r = requests.get(image)
+		success = False
+		while not success:
+			if r.status_code != 200:
+				time.sleep(2)
+				print("Failure downloading page no.{}.".format(page_number))
+			else:
+				success = True
+				with open(dest_filename, 'wb') as f:
+					f.write(r.content)
+					print("Page no.{} downloaded successfully.".format(page_number))
+					f.close()
+		time.sleep(0.5)
+	print("Chapter downloaded successfully.")
 
-    if not os.path.exists(title + '/' + chapTITLE):
-        os.mkdir(title + '/' + chapTITLE)
-    
-    for page in tqdm(range(1, pages + 1)): # from the first one till the last
-        downloadPage(driver, title + '/' + chapTITLE, chapTITLE, chapURL, page)
-
-
-# Fetch every chaptr given titleURL
-def fetchALLChapters(driver, titleURL):
-    # Additional imports
-    import requests
-    from bs4 import BeautifulSoup
-
-    page = requests.get(titleURL)
-    soup = BeautifulSoup(page.content, 'html.parser')
-    items = soup.findAll('item')
-    if not items:
-        print('Error occurred. Is the ID valid?')
-    else:
-        for item in tqdm(items):
-            strings = item.text.split('\n')
-            chapTITLE = strings[1]
-            chapURL = strings[2]
-            downloadChapter(driver, chapTITLE, chapURL)
-
-def startDriver():
-    # Get chromedriver, it needs to be in the same directory as I was too lazy to bother adding it to PATH
-    dir_path = os.path.dirname(os.path.realpath(__file__))
-    DRIVERPATH = dir_path + '/chromedriver.exe'
-
-    # Define stuff for Chrome webdriver
-    WINDOWSIZE = "1920,1080"
-    chrome_options = Options()  
-    chrome_options.add_argument("--headless")  
-    chrome_options.add_argument("--window-size=%s" % WINDOWSIZE)
-    driver = webdriver.Chrome(executable_path=DRIVERPATH, options=chrome_options)
-    return driver
-
-
+def download_manga(ID, mode="data", lang="en"):
+	title = get_title(ID, lang)
+	chapters = get_chapters(ID, lang)
+	for c in chapters:
+		num = c[0]
+		manga_ID = c[2]
+		images = get_images(manga_ID, mode)
+		dest_directory = os.path.join(os.getcwd(), title, num)
+		if not os.path.exists(dest_directory):
+			os.makedirs(dest_directory)
+		elif os.listdir(dest_directory): # chapter has already been downloaded
+			continue
+		for page_number, image in enumerate(images, 1):
+			name = str(page_number) + ".png"
+			dest_filename = os.path.join(dest_directory, name)
+			r = requests.get(image)
+			success = False
+			while not success:
+				if r.status_code != 200:
+					time.sleep(2)
+					print("[CHAPTER {}] Failure downloading page no.{}.".format(num, page_number))
+				else:
+					success = True
+					with open(dest_filename, 'wb') as f:
+						f.write(r.content)
+						print("[CHAPTER {}] Page no.{} downloaded successfully.".format(num, page_number))
+						f.close()
+			tmp = Image.open(dest_filename)
+			tmp.save(dest_filename, "PNG")
+			time.sleep(0.5)
+		print("Chapter {} downloaded successfully.".format(num))
+		pdf = FPDF()
+		for image in sorted(os.listdir("{}".format(dest_directory, num))):
+			pdf.add_page()
+			pdf.image("{}/{}".format(dest_directory, image), 0, 0, 210, 297) # A4 format
+		pdf.output("{}.pdf".format(dest_directory))
+		print("Chapter {} assembled successfully. Cleaning up...".format(num))
+		shutil.rmtree(dest_directory)
+	print("Manga downloaded successfully.")
 
 def main():
-    URL = 'https://mangadex.org/'
-    RSS = 'rss/FDW2GXwUf79AqzS5y4mKkCN8rpZnBeuc/manga_id/'
-    print('What do you want to download?\n')
-    i = str(input('c for a single chapter, m for whole manga: '))
-    while True:
-        if i == 'c':
-            j = str(input('\nWrite the whole URL: '))
-            if not chapterValid(j):
-                print('URL is not valid. Try again.')
-                continue
-            else:
-                driver = startDriver()
-                downloadChapter(driver, '', j)
-                driver.close()
-                break
-        elif i == 'm':
-            id = str(input('\nWrite the manga id: '))
-            driver = startDriver()
-            fetchALLChapters(driver, URL + RSS + id)
-            driver.close()
-            break
-            
+	parser = argparse.ArgumentParser()
+	parser.add_argument("-l", dest="lang", required=False, action="store",
+						help="download in specified language code (default: en)", default="en")
+	parser.add_argument("-d", dest="datasaver", required=False, action="store_true",
+						help="downloads images in lower quality")
+	args = parser.parse_args()
 
-if __name__ == '__main__':
-    main()
+	lang = "en" if args.lang is None else str(args.lang)
+	mode = args.datasaver if args.datasaver == "datasaver" else "data"
+
+	ID = ""
+	while True:
+		req = input("Enter m to download a whole manga, c for a single chapter, q to quit. ")
+		if req == "q":
+			break
+		elif req == "m" or "q":
+			ID = input("Enter the ID. ")
+			if req == "m":
+				print("Title: {}".format(get_title(ID, lang)))
+				download_manga(ID, mode, lang)
+			else:
+				download_chapter(ID, mode, lang)
+		else:
+			print("Not a valid command has been passed. Now quitting.")
+			break
+
+if __name__ == "__main__":
+	main()
